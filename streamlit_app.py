@@ -4,11 +4,7 @@ import pandas as pd
 import os
 from datetime import datetime
 from datetime import timedelta
-
 from zoom_integration import get_schedules
-
-import requests
-
 import pytz
 
 #
@@ -49,29 +45,6 @@ def create_df(s):
     print(f"{ke} df: \n{df_combined.info()}")
     df_schedules=df_combined
     return 
-
-def find_overlaps(df):
-    overlaps = []
-
-    # Sort by hostid and start-time for easier processing
-    new_df = df.copy()
-    new_df = new_df.sort_values(by=['host_id', 'start_time', 'end_time'])
-
-    # Iterate through each hostid
-    for _, group in new_df.groupby('host_id'):
-        for i in range(len(group)):
-            session_i = group.iloc[i]
-            for j in range(i+1, len(group)):
-                session_j = group.iloc[j]
-                # Check if sessions overlap: session_i end-time > session_j start-time and vice versa
-                if session_i['end_time'] > session_j['start_time']:
-                    overlaps.append({'host-id':session_i['host_id'], 
-                                     'Topic 1':session_i['start_time'], 
-                                     'Session 1':session_i['topic'],
-                                     'Topic 2':session_j['topic'],
-                                     'Session 2':session_j['start_time'],})
-    return overlaps
-
 
 def find_closest_record_before(host_id, df_combined, date_time, duration):
   if not isinstance(date_time, pd.Timestamp):
@@ -210,16 +183,5 @@ def main():
                                   },inplace=True)
 
       st.dataframe(df_display_new,hide_index=True)
-      with st.sidebar.expander("Raw data"):
-        st.dataframe(df_min,hide_index=True)
-      with st.sidebar.expander("Old way"):
-        st.dataframe(df_display_old,hide_index=True,use_container_width=False)
-      with st.sidebar.expander("Details - Complete"):
-          st.dataframe(df_combined_before)
-          st.dataframe(df_combined_after)
-      with st.sidebar.expander("Details - Min"):
-          st.dataframe(df_min_before)
-          st.dataframe(df_min_after)
-
 
 main()
