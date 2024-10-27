@@ -113,7 +113,7 @@ def get_schedules():
                     to_date=None,
                     page_size=page_size,
                 )
-                print(response)
+                #print(response)
 
                 if "meetings" not in response:
                     message = (
@@ -139,7 +139,7 @@ def get_schedules():
                 new_next_page_tokens[user_id][meeting_type] = new_next_page_token
 
         data = {"meetings": all_meetings, "nextPageTokens": new_next_page_tokens}
-        st.sidebar.dataframe(data)
+        #st.sidebar.dataframe(data)
         return data
 
     except Exception as e:
