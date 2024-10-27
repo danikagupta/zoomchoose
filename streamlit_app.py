@@ -1,7 +1,7 @@
 import streamlit as st
 import json
 import pandas as pd
-import os
+from time import time
 from datetime import datetime
 from datetime import timedelta
 from zoom_integration import get_schedules
@@ -28,7 +28,6 @@ def create_df(s):
     for ke,_ in me.items():
         upc=me[ke]['upcoming']
         ses=upc['sessions']
-        #print(f"{ke} upc-ses: {ses}")
         df_new=pd.DataFrame(ses)
         if not df_new.empty:
             df_new['start_time'] = pd.to_datetime(df_new['start_time'])
@@ -37,7 +36,6 @@ def create_df(s):
     df_combined['host_id']=df_combined['host_id'].replace(zoom_sessions)
     df_combined['start_time'] = pd.to_datetime(df_combined['start_time'])
     df_combined['end_time'] = pd.to_datetime(df_combined['end_time'])
-    #print(f"{ke} df: \n{df_combined.info()}")
 
     return df_combined
 
@@ -48,9 +46,6 @@ def find_closest_record_before(host_id, df_combined, date_time, duration):
     #date_time = date_time.tz_localize('UTC')  # or use tz_convert('UTC') if it already has a timezone
     date_time = date_time.tz_convert('UTC')  # or use tz_localize('UTC') if it does not has a timezone
 
-  #st.write(f"Date time is {date_time} with type {type(date_time)}")
-  #st.write(f"Start time type is {df_combined['start_time'].apply(type)}")
-  #st.write(f"End time type is {df_combined['end_time'].apply(type)}")
   df_filtered = df_combined[(df_combined['end_time'] <= date_time) & (df_combined['host_id'] == host_id)]
   if df_filtered.empty:
     return 'N.A.',None,14400
@@ -65,13 +60,10 @@ def find_closest_record_after(host_id, df_combined, date_time, duration):
   if df_combined['end_time'].dtype.tz is not None:
     date_time = date_time.tz_convert('UTC')  # or use tz_localize('UTC') if it does not has a timezone
 
-  #print(f"Date time is {date_time} with type {type(date_time)}")
-  #print(f"Start time type is {df_combined['start_time'].apply(type)}")
   df_filtered = df_combined[(df_combined['start_time'] >= date_time) & (df_combined['host_id'] == host_id)]
   if df_filtered.empty:
     return 'N.A.',None,14400
   closest_record = df_filtered.loc[df_filtered['start_time'].idxmin()]
-
   end_time = date_time+ pd.Timedelta(minutes=duration)
   time_gap = closest_record['start_time'] - end_time
   return closest_record['topic'],closest_record['start_time'],time_gap.total_seconds()/60
@@ -115,16 +107,15 @@ def find_schedule(df_schedules,d,t,duration=60,w=0):
 
 def main_api(date,time,duration,repeat):
 
-  d=get_schedules()
-  df_schedules=create_df(json.dumps(d))
+  schedules=get_schedules()
+  df_schedules=create_df(json.dumps(schedules))
+  df_combined_before, df_combined_after =pd.DataFrame(), pd.DataFrame()
 
-  df_combined_before=pd.DataFrame()
-  df_combined_after=pd.DataFrame()
   for i in range(repeat):
     df_before,df_after=find_schedule(df_schedules,date,time,duration,i)
     df_combined_before=pd.concat([df_combined_before,df_before], ignore_index=True)
     df_combined_after=pd.concat([df_combined_after,df_after], ignore_index=True)
-  # Now combine
+
   idx_before=df_combined_before.groupby('host_id')['gap'].idxmin()
   df_min_before=df_combined_before.loc[idx_before]
   df_min_before=df_min_before.reset_index(drop=True)
@@ -144,6 +135,11 @@ def main():
   duration=col3.number_input("Duration", value=60)
   repeat=col4.number_input("Repeat", value=1)
   if date and time and duration and repeat:
+    duration_st=st.sidebar.empty()
+    if 'start_time' not in st.session_state:
+      st.session_state.start_time = None
+    st.session_state.start_time = datetime.now()
+
     df_response=main_api(date,time,duration,repeat);
     # Display the results
     fields=['host_id','min_gap','gap_before','gap_after','topic_before','et','topic_after','st']
@@ -156,5 +152,8 @@ def main():
                                 'topic_after':'Topic 2','st':'Start time 2',
                                 },inplace=True)
     st.dataframe(df_display_new,hide_index=True)
+    # Elapsed time
+    elapsed_time = datetime.now() - st.session_state.start_time
+    duration_st.title(f"Time taken: {elapsed_time.total_seconds():.1f} seconds")
 
 main()
