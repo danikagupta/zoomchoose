@@ -1,6 +1,225 @@
 import streamlit as st
+import json
+import pandas as pd
+import os
+from datetime import datetime
+from datetime import timedelta
 
-st.title("🎈 My new app")
-st.write(
-    "Let's start building! For help and inspiration, head over to [docs.streamlit.io](https://docs.streamlit.io/)."
-)
+from zoom_integration import get_schedules
+
+import requests
+
+import pytz
+
+#
+# All internal calculations are in UTC
+# Convert to user-friendly timezones at IO
+#
+
+df_schedules=pd.DataFrame()
+
+df_comparison=pd.DataFrame()
+df_before=pd.DataFrame()
+df_after=pd.DataFrame()
+
+zoom_sessions={
+'14FZQXqLRSODS33uQTVVaw':'AZ2',
+'5uBBBmxkRs2ULd5cfs8Adw':'AZ5',
+'atAAAIDOQYqcONrWd0oxxg':'AZ1',
+'dZ6K_rnJTOO5S-jOUpXf3w':'AZ3',
+'di6QjKDzTA-BsECJM-lqDA':'AZ7',
+'j4IclWA4ScOUmP_grnbflg':'AZ4',
+}
+
+
+def create_df(s):
+    global df_schedules
+    dataset=json.loads(s)
+    me=dataset['meetings']
+    df_combined=pd.DataFrame()
+    for ke,_ in me.items():
+        upc=me[ke]['upcoming']
+        ses=upc['sessions']
+        print(f"{ke} upc-ses: {ses}")
+        df_new=pd.DataFrame(ses)
+        if not df_new.empty:
+            df_new['start_time'] = pd.to_datetime(df_new['start_time'])
+            df_new['end_time'] = df_new['start_time']+pd.to_timedelta(df_new['duration'], unit='m')
+            df_combined = pd.concat([df_combined, df_new], ignore_index=True)
+    print(f"{ke} df: \n{df_combined.info()}")
+    df_schedules=df_combined
+    return 
+
+def find_overlaps(df):
+    overlaps = []
+
+    # Sort by hostid and start-time for easier processing
+    new_df = df.copy()
+    new_df = new_df.sort_values(by=['host_id', 'start_time', 'end_time'])
+
+    # Iterate through each hostid
+    for _, group in new_df.groupby('host_id'):
+        for i in range(len(group)):
+            session_i = group.iloc[i]
+            for j in range(i+1, len(group)):
+                session_j = group.iloc[j]
+                # Check if sessions overlap: session_i end-time > session_j start-time and vice versa
+                if session_i['end_time'] > session_j['start_time']:
+                    overlaps.append({'host-id':session_i['host_id'], 
+                                     'Topic 1':session_i['start_time'], 
+                                     'Session 1':session_i['topic'],
+                                     'Topic 2':session_j['topic'],
+                                     'Session 2':session_j['start_time'],})
+    return overlaps
+
+
+def find_closest_record_before(host_id, df_combined, date_time, duration):
+  if not isinstance(date_time, pd.Timestamp):
+    date_time = pd.to_datetime(date_time)
+  if df_combined['end_time'].dtype.tz is not None:
+    #date_time = date_time.tz_localize('UTC')  # or use tz_convert('UTC') if it already has a timezone
+    date_time = date_time.tz_convert('UTC')  # or use tz_localize('UTC') if it does not has a timezone
+
+  #st.write(f"Date time is {date_time} with type {type(date_time)}")
+  #st.write(f"Start time type is {df_combined['start_time'].apply(type)}")
+  #st.write(f"End time type is {df_combined['end_time'].apply(type)}")
+  df_filtered = df_combined[(df_combined['end_time'] <= date_time) & (df_combined['host_id'] == host_id)]
+  if df_filtered.empty:
+    return 'N.A.',None,14400
+  closest_record = df_filtered.loc[df_filtered['start_time'].idxmax()]
+  closest_end_time = closest_record['start_time'] + pd.Timedelta(minutes=closest_record['duration'])
+  time_gap = date_time - closest_end_time
+  return closest_record['topic'],closest_record['end_time'],time_gap.total_seconds()/60
+
+def find_closest_record_after(host_id, df_combined, date_time, duration):
+  if not isinstance(date_time, pd.Timestamp):
+    date_time = pd.to_datetime(date_time)
+  if df_combined['end_time'].dtype.tz is not None:
+    date_time = date_time.tz_convert('UTC')  # or use tz_localize('UTC') if it does not has a timezone
+
+  #print(f"Date time is {date_time} with type {type(date_time)}")
+  #print(f"Start time type is {df_combined['start_time'].apply(type)}")
+  df_filtered = df_combined[(df_combined['start_time'] >= date_time) & (df_combined['host_id'] == host_id)]
+  if df_filtered.empty:
+    return 'N.A.',None,14400
+  closest_record = df_filtered.loc[df_filtered['start_time'].idxmin()]
+
+  end_time = date_time+ pd.Timedelta(minutes=duration)
+  time_gap = closest_record['start_time'] - end_time
+  return closest_record['topic'],closest_record['start_time'],time_gap.total_seconds()/60
+
+def convert_date_time_from_pacific_to_utc(d,t): 
+  dt = datetime.combine(d, t)
+  pacific = pytz.timezone('US/Pacific')
+  pacific_time = pacific.localize(dt)
+  utc_time = pacific_time.astimezone(pytz.utc)
+  return utc_time
+
+def convert_utc_to_pacific_display(utc_time):
+    if pd.isna(utc_time):
+        return None
+    if utc_time.tzinfo is None:
+        utc_time = pytz.utc.localize(utc_time)
+    pacific = pytz.timezone('US/Pacific')
+    pacific_time = utc_time.astimezone(pacific)
+    formatted_pacific_time = pacific_time.strftime("%b %d, %I:%M %p")
+    return formatted_pacific_time
+   
+def find_schedule(d,t,duration=60,w=0):
+    global df_schedules, df_comparison, df_before, df_after
+    #dt = datetime.datetime.combine(d+timedelta(weeks=w), t)
+    dt = convert_date_time_from_pacific_to_utc(d+timedelta(weeks=w),t)
+    df=df_schedules.copy()
+    with st.expander("Find Schedule: DF-SCHEDULES"):
+       st.dataframe(df,hide_index=True)
+    df['host_id']=df['host_id'].replace(zoom_sessions)
+    df['start_time'] = pd.to_datetime(df['start_time'])
+    df['end_time'] = pd.to_datetime(df['end_time'])
+    st.sidebar.write(f"{duration} mins for {convert_utc_to_pacific_display(dt)}")
+    unique_hosts=df['host_id'].unique()
+    #st.write(f"Unique hosts: {unique_hosts}")
+    mylist=[]
+    beforeList=[]
+    afterList=[]
+    for host in unique_hosts:
+        #st.write(f"host: {host}")
+        t1,r1,g1=find_closest_record_before(host,df,dt,duration)
+        #st.write(f"{host}: closest before {dt} is {r1}")
+        t2,r2,g2=find_closest_record_after(host,df,dt,duration)
+        #st.write(f"{host}: closest after {dt} is {r2}")
+        gmin=min(g1,g2)
+        mylist.append({'host_id':host,'new_dt':dt,'new_duration':duration,
+                       'before_topic':t1,'before_et':r1,'before_gap':g1,
+                       'after_topic':t2,'after_st':r2,'after_gap':g2,
+                       'min_gap':gmin})
+        beforeList.append({'host_id':host,'dt':dt,'duration':duration,
+                       'topic':t1,'et':r1,'gap':g1,})
+        afterList.append({'host_id':host,'dt':dt,'duration':duration,
+                       'topic':t2,'st':r2,'gap':g2,})
+    df_comparison=pd.DataFrame(mylist)
+    df_comparison.sort_values(by='min_gap',ascending=False,inplace=True)
+    df_before=pd.DataFrame(beforeList)
+    df_after=pd.DataFrame(afterList)
+
+def main():
+  global df_schedules 
+  col1,col2,col3,col4=st.columns(4)
+  date=col1.date_input("Find Zoom for: ", value=None)
+  time=col2.time_input("Time (Pacific)", value=None)
+  duration=col3.number_input("Duration", value=60)
+  repeat=col4.number_input("Repeat", value=1)
+  if date and time and duration and repeat:
+      d=get_schedules()
+      create_df(json.dumps(d))
+
+      df_combined=pd.DataFrame()
+      df_combined_before=pd.DataFrame()
+      df_combined_after=pd.DataFrame()
+      for i in range(repeat):
+        find_schedule(date,time,duration,i)
+        df_combined=pd.concat([df_combined,df_comparison], ignore_index=True)
+        df_combined_before=pd.concat([df_combined_before,df_before], ignore_index=True)
+        df_combined_after=pd.concat([df_combined_after,df_after], ignore_index=True)
+      # Now combine
+      idx_before=df_combined_before.groupby('host_id')['gap'].idxmin()
+      df_min_before=df_combined_before.loc[idx_before]
+      df_min_before=df_min_before.reset_index(drop=True)
+      idx_after=df_combined_after.groupby('host_id')['gap'].idxmin()
+      df_min_after=df_combined_after.loc[idx_after]
+      df_min_after=df_min_after.reset_index(drop=True)
+      df_min=pd.merge(df_min_before,df_min_after,on='host_id',suffixes=('_before','_after'))
+      df_min['min_gap'] = df_min[['gap_before', 'gap_after']].min(axis=1)
+      # Old way
+      fields=['host_id','min_gap','before_gap','after_gap','before_topic','before_et','after_topic','after_st']
+      df_display_old=df_combined[fields].copy()
+      df_display_old['before_et'] = df_display_old['before_et'].apply(convert_utc_to_pacific_display)
+      df_display_old['after_st'] = df_display_old['after_st'].apply(convert_utc_to_pacific_display)
+      df_display_old.rename(columns={'host_id':'Host','min_gap':'Minimum gap',
+                                  'before_topic':'Topic 1','before_et':'End time 1',
+                                  'after_topic':'Topic 2','after_st':'Start time 2',
+                                  },inplace=True)
+      #Now display
+      fields=['host_id','min_gap','gap_before','gap_after','topic_before','et','topic_after','st']
+      df_display_new=df_min[fields].copy()
+      df_display_new['et'] = df_display_new['et'].apply(convert_utc_to_pacific_display)
+      df_display_new['st'] = df_display_new['st'].apply(convert_utc_to_pacific_display)
+      df_display_new.sort_values(by='min_gap',ascending=False,inplace=True)
+      df_display_new.rename(columns={'host_id':'Host','min_gap':'Minimum gap',
+                                  'topic_before':'Topic 1','et':'End time 1',
+                                  'topic_after':'Topic 2','st':'Start time 2',
+                                  },inplace=True)
+
+      st.dataframe(df_display_new,hide_index=True)
+      with st.sidebar.expander("Raw data"):
+        st.dataframe(df_min,hide_index=True)
+      with st.sidebar.expander("Old way"):
+        st.dataframe(df_display_old,hide_index=True,use_container_width=False)
+      with st.sidebar.expander("Details - Complete"):
+          st.dataframe(df_combined_before)
+          st.dataframe(df_combined_after)
+      with st.sidebar.expander("Details - Min"):
+          st.dataframe(df_min_before)
+          st.dataframe(df_min_after)
+
+
+main()
