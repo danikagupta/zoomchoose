@@ -128,6 +128,35 @@ def main_api(date,time,duration,repeat):
   df_min['min_gap'] = df_min[['gap_before', 'gap_after']].min(axis=1)
   return df_min
 
+def get_event_list(sched):
+   meetings = sched['meetings']
+   eventlist=[]
+   for v in meetings.values():
+      se=v
+      for ke,va in v.items():
+         print(f"Key: {ke}, Val: {str(va)[:30]}")
+         if ke=='upcoming':
+            eventlist.extend(va['sessions'])
+   return eventlist 
+
+
+def main2():
+  st.title("Check upcoming schedule")
+  if 'schedules' not in st.session_state:
+     st.session_state['schedules']=get_schedules()
+  if st.sidebar.button("Refresh schedules"):
+     st.session_state['schedules']=get_schedules()
+  filter_phrase=st.sidebar.text_input("Search...", value="")
+  schedules=st.session_state['schedules']
+  #st.write(f" SCHED: {schedules}")
+  event_list=get_event_list(schedules)
+  df_event_list = pd.DataFrame(event_list)
+  df_event_list=df_event_list[['topic','start_time','duration','timezone','created_at']]
+  if filter_phrase:
+     df_event_list=df_event_list[df_event_list['topic'].str.contains(filter_phrase,case=False,na=False)]
+  st.dataframe(df_event_list,hide_index=True)
+
+
 def main():
   col1,col2,col3,col4=st.columns(4)
   date=col1.date_input("Find Zoom for: ", value=None)
@@ -156,4 +185,6 @@ def main():
     elapsed_time = datetime.now() - st.session_state.start_time
     duration_st.title(f"Time taken: {elapsed_time.total_seconds():.1f} seconds")
 
-main()
+#main()
+st.set_page_config(layout="wide")
+main2()
